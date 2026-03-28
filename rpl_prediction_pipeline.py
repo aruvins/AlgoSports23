@@ -18,8 +18,8 @@ import openpyxl
 # LOAD DATA
 # ════════════════════════════════════════════════════════════════════
 
-train = pd.read_csv('Train.csv')       # 940 regular season games
-pred  = pd.read_csv('Predictions.csv')  # 75 derby matches (fill in margins)
+train = pd.read_csv('algosports23-predictions-2025/Train.csv')       # 940 regular season games
+pred  = pd.read_csv('algosports23-predictions-2025/Predictions.csv')  # 75 derby matches (fill in margins)
 
 # Build team index (165 teams)
 all_teams = sorted(set(train['HomeTeam'].tolist() + train['AwayTeam'].tolist()))
@@ -89,12 +89,12 @@ massey_dict = {all_teams[i]: massey_ratings[i] for i in range(n_teams)}
 #   - A home advantage of 50 Elo points
 # We run 5 full passes through the season to stabilize ratings.
 
-K = 32              # base update magnitude
-HOME_ADV_ELO = 50   # Elo points for home advantage
+K = 18         # base update magnitude
+HOME_ADV_ELO = 0   # Elo points for home advantage
 
 train_sorted = train.sort_values('Date').reset_index(drop=True)
 
-for _ in range(5):  # multiple passes for convergence
+for _ in range(50):  # multiple passes for convergence
     elo = {t: 1500.0 for t in all_teams}
     for _, row in train_sorted.iterrows():
         home, away = row['HomeTeam'], row['AwayTeam']
@@ -137,7 +137,7 @@ for _, row in train.iterrows():
 raw_avg = {t: np.mean(ms) for t, ms in team_margins.items()}
 adj_rating = deepcopy(raw_avg)
 
-for _ in range(3):  # 3 SOS adjustment iterations
+for _ in range(10):  # 3 SOS adjustment iterations
     adj_rating = {
         t: raw_avg[t] + 0.3 * np.mean([adj_rating[o] for o in team_opps[t]])
         for t in all_teams
@@ -148,10 +148,10 @@ for _ in range(3):  # 3 SOS adjustment iterations
 # The Colley method starts from a Bayesian prior (each team is 0.500)
 # and updates based on win/loss records. We modify it to use
 # "fractional wins" via a sigmoid function on the margin:
-#   frac_win = sigmoid(margin / 20)
+#   frac_win = sigmoid(margin / 10)
 # This means a 40-point blowout counts as ~0.88 wins, while a
 # 2-point squeaker counts as ~0.52 wins. The temperature parameter
-# (20) controls how much margin matters vs. binary win/loss.
+# (10) controls how much margin matters vs. binary win/loss.
 
 C = 2 * np.eye(n_teams)   # Colley matrix (diagonal = 2 + games played)
 b = np.ones(n_teams)       # RHS vector (starts at 1 = prior of 0.5 per team)
@@ -166,7 +166,7 @@ for _, row in train.iterrows():
     C[hi, ai] -= 1; C[ai, hi] -= 1
 
     # Fractional win via sigmoid
-    frac = 1 / (1 + np.exp(-margin / 20))
+    frac = 1 / (1 + np.exp(-margin / 10)) # Tried [2, RMSE = 270.54204] [10, RMSE = 258.42213][14.1, RMSE = 258.63487] [20, RMSE = 258.94] [40 = 260.38241]
     b[hi] += (frac - 0.5)
     b[ai] += (0.5 - frac)
 
@@ -214,6 +214,50 @@ for team in all_teams:
     )
 
 
+# ─── System 6: Efficiency Ratings (Off/Def Split) ───────────────────
+# Instead of Net Margin, we model the raw points:
+# Points_Scored = Base + Offense(Team) - Defense(Opponent) + HFA
+# Higher Offense = More points scored.
+# Higher Defense = Fewer points allowed (Higher suppression).
+
+# We have 2 rows per game (one for home score, one for away score)
+# Total rows = 2 * len(train)
+# Total vars = 2 * n_teams + 1 (intercept)
+A_eff = np.zeros((2 * len(train), 2 * n_teams + 1))
+y_eff = np.zeros(2 * len(train))
+
+for i, row in train.iterrows():
+    h_idx = team_to_idx[row['HomeTeam']]
+    a_idx = team_to_idx[row['AwayTeam']]
+    
+    # Row for Home Team scoring
+    A_eff[2*i, h_idx] = 1              # Home Offense
+    A_eff[2*i, n_teams + a_idx] = -1   # Away Defense (suppression)
+    A_eff[2*i, 2 * n_teams] = 1        # HFA effect on scoring
+    y_eff[2*i] = row['HomePts']
+    
+    # Row for Away Team scoring
+    A_eff[2*i+1, a_idx] = 1            # Away Offense
+    A_eff[2*i+1, n_teams + h_idx] = -1 # Home Defense (suppression)
+    A_eff[2*i+1, 2 * n_teams] = 0      # No HFA for away team
+    y_eff[2*i+1] = row['AwayPts']
+
+# Solve via Ridge Regression
+lam_eff = 0.1
+sol_eff = np.linalg.solve(
+    A_eff.T @ A_eff + lam_eff * np.eye(A_eff.shape[1]),
+    A_eff.T @ y_eff
+)
+
+off_ratings = sol_eff[:n_teams]
+def_ratings = sol_eff[n_teams:2*n_teams]
+
+# Net Rating = (Offense + Defense) 
+# because high Offense AND high Defense (suppression) make a strong team.
+eff_net_dict = {all_teams[i]: (off_ratings[i] + def_ratings[i]) for i in range(n_teams)}
+off_dict = {all_teams[i]: off_ratings[i] for i in range(n_teams)}
+def_dict = {all_teams[i]: def_ratings[i] for i in range(n_teams)}
+
 # ════════════════════════════════════════════════════════════════════
 # STEP 3: NORMALIZE ALL RATINGS TO A COMMON SCALE (Z-SCORES)
 # ════════════════════════════════════════════════════════════════════
@@ -232,6 +276,9 @@ systems = {
     'adj_pd': normalize(adj_rating),
     'colley': normalize(colley_dict),
     'feat':   normalize(feat_rating),
+    'eff_net': normalize(eff_net_dict), # The new combo rating
+    'offense': normalize(off_dict),    # Pure scoring power
+    'defense': normalize(def_dict),    # Pure prevention power
 }
 
 
@@ -244,11 +291,14 @@ systems = {
 # robustness on unseen matchups.
 
 weights = {
-    'massey': 0.30,   # strongest individual predictor
-    'adj_pd': 0.25,   # captures schedule strength
-    'elo':    0.15,   # sequential, captures momentum/form
-    'colley': 0.15,   # Bayesian, handles small samples well
-    'feat':   0.15,   # captures offense/defense dimensions
+    'massey': 0,   # strongest individual predictor
+    'adj_pd': 0,   # captures schedule strength
+    'elo':    0,   # sequential, captures momentum/form
+    'colley': 0,   # Bayesian, handles small samples well
+    'feat':   0,   # captures offense/defense dimensions
+    'eff_net': 0,   # efficiency net rating
+    'offense': 0.5,   # pure scoring power
+    'defense': 0.5,   # pure prevention power
 }
 
 ensemble = {}
@@ -330,7 +380,7 @@ print(f"  Ties:        {(margins == 0).sum()}")
 rank_order = sorted(ensemble.items(), key=lambda x: -x[1])
 team_rank = {t: r for r, (t, _) in enumerate(rank_order, 1)}
 
-wb = openpyxl.load_workbook('Rankings.xlsx')
+wb = openpyxl.load_workbook('algosports23-predictions-2025/Rankings.xlsx')
 ws = wb.active
 for ri in range(2, ws.max_row + 1):
     tn = ws.cell(row=ri, column=2).value

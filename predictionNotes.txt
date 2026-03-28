@@ -1,0 +1,61 @@
+The Big Picture
+You have 940 games where you know the scores. From those, you need to figure out how good each of the 165 teams is, then use those "goodness scores" (ratings) to predict 75 new games.
+The entire model boils down to one idea: give every team a number that represents how strong they are. Then to predict a game, just subtract: Team A's number - Team B's number = predicted margin.
+Step 0: Home Field Advantage
+In the training data, home teams win 55.5% of the time by an average of ~5.9 points. But the 75 derby matches are at a neutral site — no home team. So we need to strip out home advantage from the training data before learning team ratings.
+Instead of using 5.9 (the raw average), we estimate it more carefully at 3.31 points using regression. Why the difference? Imagine the best team in the league happens to play 8 of their 12 games at home. They'd win those by 50+ points, inflating the "average home margin." The regression approach says "hold on, that team would've won by 47 points even on the road — only 3 of those points are from being at home."
+From here on, every game margin is adjusted: neutral_margin = actual_margin - 3.31
+
+
+
+The 5 Rating Systems
+Instead of building one rating system and hoping it's right, we build five different ones and average them. Think of it like asking five different sports analysts for their power rankings and averaging their opinions — the group prediction is usually better than any individual.
+
+System 1: Massey Ratings (30% of final answer)
+This is the most intuitive one. Imagine you're solving a giant puzzle: for every game, you want rating[winner] - rating[loser] ≈ margin of victory. With 940 games and 165 unknowns (one rating per team), you have a massively overdetermined system — way more equations than unknowns.
+You can't solve it perfectly (games are noisy), so you find the ratings that get as close as possible to explaining every margin. This is literally just linear regression — the same y = mx + b concept, except here y is the margin, and the x variables are "was Team A in this game? Was Team B?"
+This gets the highest weight (30%) because it directly optimizes what we're being scored on: predicting margins.
+
+System 2: Elo Ratings (15%)
+You might know Elo from chess. Every team starts at 1500. After each game, the winner gains points and the loser loses points. The key twist: how many points move depends on how surprising the result was.
+If the #1 team beats the #165 team, barely any points move (expected result). If #165 beats #1, a huge number of points move (massive upset). We also scale the update by the margin — a 50-point blowout moves more points than a 2-point squeaker, but we use log(margin) so a 100-point blowout doesn't move twice as much as a 50-point one (diminishing returns on blowouts).
+Elo adds something the other systems don't: it processes games in order, so a team that started 1-5 but finished 6-0 gets a higher rating than one that started 6-0 but finished 1-5. It captures form/momentum.
+
+System 3: Adjusted Point Differential (25%)
+This one starts super simple: for each team, compute their average margin (points scored minus points allowed per game). Wyoming averages +20? Their rating is +20.
+But wait — what if Wyoming only played terrible teams? Their +20 is less impressive than a team that averaged +15 against top opponents. So we adjust:
+new_rating = raw_margin + 0.3 × average(opponents' ratings)
+If your opponents are strong (positive ratings), your rating gets boosted. If they're weak, it gets penalized. We repeat this 3 times so the adjustment ripples through — your opponents' opponents matter too.
+
+System 4: Colley Matrix (15%)
+Colley starts from a Bayesian idea: before seeing any data, assume every team is perfectly average (0.500). Then update based on results. The twist is that we don't just use win/loss — we use fractional wins. A 40-point blowout counts as 0.88 wins, while a 2-point squeaker counts as 0.52 wins.
+Why include this? Colley has a built-in "don't overreact" property. Teams with fewer games get pulled back toward average more strongly. With only 10-13 games per team, this conservatism is valuable — it naturally prevents us from over-trusting small samples.
+
+System 5: Feature-Based (15%)
+The other four systems all boil down to a single number: margin. But a team that wins 90-80 is very different from one that wins 30-20, even though both won by 10. System 5 separates offense from defense:
+    •    50%: average margin (same as everyone else)
+    •    20%: how much they outscore the league average on offense
+    •    20%: how much better their defense is than league average
+    •    10%: win percentage (do they win close games?)
+This captures a different dimension of team quality.
+
+
+
+
+Combining the 5 Systems
+Each system outputs numbers in different units — Massey is in points (~-60 to +60), Elo is in Elo points (~1100 to 1900), Colley is in tiny fractions (~-0.4 to +0.4). You can't just add them.
+Z-score normalization fixes this. For each system, we compute the mean and standard deviation of all 165 ratings, then transform: normalized = (rating - mean) / std_dev. After this, every system has mean 0 and std dev 1 — they're on the same scale.
+Then we take the weighted average: ensemble = 0.30×Massey + 0.25×AdjPD + 0.15×Elo + 0.15×Colley + 0.15×Feature
+From Ensemble Score → Point Prediction
+The ensemble score is in "z-score units" which don't mean anything to a fan. We need to convert to points. Simple linear regression on the training data finds:
+predicted_margin = 25.27 × (score_teamA - score_teamB) + 0.70
+So if Team A's ensemble score is 1.5 and Team B's is 0.5, the difference is 1.0, and the predicted margin is about 25.27 × 1.0 + 0.70 ≈ 26 points.
+
+
+Shrinkage: The Secret Weapon
+Finally, we multiply every prediction by 0.95 — pulling it 5% toward zero. This sounds weird (why make predictions worse on training data?), but here's the intuition:
+With only 11 games per team, some teams look amazing partly due to luck — maybe they happened to play their 3 worst opponents at home. Their rating is inflated. Similarly, some teams look worse than they are. When we predict a 60-point margin, we're probably overconfident. Multiplying by 0.95 says "I think it'll be 57 instead of 60" — a small hedge that pays off on average because extreme predictions are disproportionately driven by noise.
+
+Why Not Use "Real" Machine Learning?
+We actually tried — LightGBM, XGBoost, Random Forest, stacking ensembles, 60+ engineered features. It scored better on training data (RMSE 27.1 vs 28.1) but significantly worse on the actual Kaggle leaderboard.
+The reason is classic overfitting. With 165 teams and only ~11 games each, there isn't enough data for complex models to learn real patterns — they memorize noise instead. The simple rating ensemble has very few "knobs" (just 5 ratings per team + fixed weights), so there's almost nothing to overfit. That's why it generalizes better to the unseen derby matches.

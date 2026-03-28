@@ -1,0 +1,67 @@
+Baseline:
+    weights = {
+        'massey': 0.30,   # strongest individual predictor
+        'adj_pd': 0.25,   # captures schedule strength
+        'elo':    0.15,   # sequential, captures momentum/form
+        'colley': 0.15,   # Bayesian, handles small samples well
+        'feat':   0.15,   # captures offense/defense dimensions
+    }
+
+    RMSE = 28.13
+
+System 1:
+    weights = {
+        'massey': 1.0,   # strongest individual predictor
+        'adj_pd': 0,   # captures schedule strength
+        'elo':    0,   # sequential, captures momentum/form
+        'colley': 0,   # Bayesian, handles small samples well
+        'feat':   0,   # captures offense/defense dimensions
+    }
+
+    RMSE = 27.28
+
+System 2:
+    weights = {
+        'massey': 0,   # strongest individual predictor
+        'adj_pd': 1.0,   # captures schedule strength
+        'elo':    0,   # sequential, captures momentum/form
+        'colley': 0,   # Bayesian, handles small samples well
+        'feat':   0,   # captures offense/defense dimensions
+    }
+
+    RMSE = 28.94
+
+
+System 3:
+    weights = {
+        'massey': 0,   # strongest individual predictor
+        'adj_pd': 0,   # captures schedule strength
+        'elo':    1.0,   # sequential, captures momentum/form
+        'colley': 0,   # Bayesian, handles small samples well
+        'feat':   0,   # captures offense/defense dimensions
+    }
+
+    RMSE = 30.02
+
+System 4:
+    weights = {
+        'massey': 0,   # strongest individual predictor
+        'adj_pd': 0,   # captures schedule strength
+        'elo':    0,   # sequential, captures momentum/form
+        'colley': 1.0,   # Bayesian, handles small samples well
+        'feat':   0,   # captures offense/defense dimensions
+    }
+
+    RMSE = 27.93
+
+System 5:
+    weights = {
+        'massey': 0,   # strongest individual predictor
+        'adj_pd': 0,   # captures schedule strength
+        'elo':    0,   # sequential, captures momentum/form
+        'colley': 0,   # Bayesian, handles small samples well
+        'feat':   1,   # captures offense/defense dimensions
+    }
+
+    RMSE = 29.60
+
